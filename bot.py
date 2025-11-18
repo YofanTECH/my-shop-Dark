@@ -22,31 +22,36 @@ time.sleep(2)
 
 def get_live_price(crypto="bitcoin"):
     try:
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto}&vs_currencies=usd"
-        return requests.get(url, timeout=6).json()[crypto]["usd"]
+        return requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={crypto}&vs_currencies=usd", timeout=6).json()[crypto]["usd"]
     except:
         return 101500 if crypto == "bitcoin" else 210
 
 def parse_product(text):
     if not text or "#DH" not in text: return None
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
-    if len(lines) < 2: return None
 
-    item_id = re.search(r'#DH\d+', lines[0]).group()
-    name = lines[1]
+    # Extract #DHxxxx
+    item_id = re.search(r'#DH\d+', text)
+    if not item_id: return None
+    item_id = item_id.group()
 
+    # Extract name (line after #DH)
+    name_match = re.search(r'#DH\d+\s*\n\s*(.+?)(?:\n|$)', text, re.DOTALL)
+    name = name_match.group(1).strip() if name_match else "Item"
+
+    # Extract price
     price_match = re.search(r'\$([0-9,]+)', text)
     if not price_match: return None
     price = int(price_match.group(1).replace(",", ""))
 
-    status_line = next((l for l in lines if l.lower().startswith("status:")), "Status: Available")
-    status = "SOLD" if "sold" in status_line.lower() else "AVAILABLE"
+    # Check if sold
+    status = "SOLD" if re.search(r'status\s*:\s*sold', text, re.I) else "AVAILABLE"
 
     return {"item_id": item_id, "name": name, "price": price, "status": status}
 
 def is_member(user_id):
     try:
-        return bot.get_chat_member(CHANNEL_ID, user_id).status in ["member", "administrator", "creator"]
+        status = bot.get_chat_member(CHANNEL_ID, user_id).status
+        return status in ["member", "administrator", "creator"]
     except:
         return False
 
@@ -69,8 +74,8 @@ def check_join(call):
     else:
         bot.answer_callback_query(call.id, "Join the channel first.", show_alert=True)
 
-# Works with photo + caption AND text posts
-@bot.message_handler(content_types=['text', 'photo', 'video'])
+# NOW WORKS WITH PHOTO + CAPTION 100%
+@bot.message_handler(content_types=['photo', 'text'])
 def handle_forward(message):
     if not message.forward_from_chat or f"@{message.forward_from_chat.username}" != CHANNEL_USERNAME:
         return
@@ -78,36 +83,37 @@ def handle_forward(message):
         bot.reply_to(message, "Join the channel first.")
         return
 
-    # Get text from caption OR normal text
-    text = message.caption if message.caption else message.text
+    text = message.caption if hasattr(message, 'caption') and message.caption else message.text
     if not text: return
 
     info = parse_product(text)
     if not info:
-        bot.reply_to(message, "Invalid format.")
+        bot.reply_to(message, "Invalid product format.")
         return
     if info["status"] == "SOLD":
         bot.reply_to(message, f"{info['item_id']} – SOLD")
         return
 
+    # Clean message + REAL inline buttons (under the message)
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("Bitcoin", callback_data=f"pay_BTC_{info['item_id']}_{info['price']}"))
     markup.add(types.InlineKeyboardButton("Zcash",   callback_data=f"pay_ZEC_{info['item_id']}_{info['price']}"))
 
-    bot.send_message(message.chat.id,
- f"""{info['item_id']}
-{info['name']}
-
-${info['price']} USD
-Worldwide delivery: 8–12 days
-
-Select payment:""", reply_markup=markup)
+    bot.send_message(
+        message.chat.id,
+        f"<b>{info['item_id']}</b>\n"
+        f"{info['name']}\n\n"
+        f"<b>${info['price']} USD</b>\n"
+        f"Worldwide delivery: 8–12 days\n\n"
+        f"Choose payment method:",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("pay_"))
 def show_payment(call):
     crypto, item_id, price = call.data.split("_")[1:]
     price = int(price)
-    name = call.message.text.split("\n")[1]
 
     if crypto == "BTC":
         wallet = BTC_WALLET
@@ -120,31 +126,26 @@ def show_payment(call):
         amount = round(price / rate, 6)
         coin = "ZEC"
 
-    text = f"""
-{item_id}
-{name}
-
-${price} USD
-≈ {amount} {coin} (live)
-
-<code>{wallet}</code>
-
-Worldwide · 8–12 days
-    """.strip()
+    text = f"<b>{item_id}</b>\n" \
+           f"{call.message.html_text.split('</b>')[1].split('<b>')[0].strip()}\n\n" \
+           f"<b>${price} USD</b>\n" \
+           f"≈ <code>{amount}</code> {coin} (live rate)\n\n" \
+           f"<code>{wallet}</code>\n\n" \
+           f"Worldwide · 8–12 days"
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("Copy Address", callback_data=f"copy_{wallet}"))
     markup.add(types.InlineKeyboardButton("I Paid", url=f"https://t.me/{SUPPORT_USERNAME}?text=Payment%20sent%20–%20{item_id}%20–%20%24{price}%20via%20{crypto}"))
 
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
-                          reply_markup=markup, parse_mode="HTML")
+                          parse_mode="HTML", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("copy_"))
 def copy(c):
     bot.answer_callback_query(c.id, c.data[5:], show_alert=True)
 
 @app.route('/')
-def home(): return "Bot alive"
+def home(): return "Bot running"
 
 if __name__ == "__main__":
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
