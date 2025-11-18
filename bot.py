@@ -4,19 +4,24 @@ import requests
 import re
 import threading
 from flask import Flask
+import time
 
 app = Flask(__name__)
 
-# YOUR REAL DATA
+# YOUR DATA
 BOT_TOKEN        = "8575320394:AAEKlwpqbny9H2MEz8tXMSNStmvHRG9KMOM"
 CHANNEL_USERNAME = "@DarkWeb_MarketStore"
 SUPPORT_USERNAME = "Backdoor_Operator"
-
-BTC_WALLET  = "bc1qydlfhxwkv50zcxzc5z5evuadhfh7dsexg9wqtt"
-ZEC_WALLET  = "0x0aD8F727EB6869a0b48f1C4E8AF6dcEde56003Be"   # replace if you use shielded t-addr or z-addr later
+BTC_WALLET       = "bc1qydlfhxwkv50zcxzc5z5evuadhfh7dsexg9wqtt"
+ZEC_WALLET       = "t1gZ4X8wZ9v5Kj9fK9fK9fK9fK9fK9fK9fK"   # change later if needed
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# THIS LINE FIXES YOUR 409 ERROR
+bot.remove_webhook()
+time.sleep(2)   # give Telegram time to process
+
+# rest of your functions (unchanged)
 def get_price(crypto="bitcoin"):
     try:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto}&vs_currencies=usd"
@@ -36,7 +41,6 @@ def parse_product(text):
         return {"status":"SOLD","item_id":item_id}
     return {"item_id":item_id, "name":name, "price":price, "status":"AVAILABLE"}
 
-# MAIN FLOW
 @bot.message_handler(content_types=['text'])
 def handle_forward(message):
     if not message.forward_from_chat or f"@{message.forward_from_chat.username}" != CHANNEL_USERNAME:
@@ -50,20 +54,15 @@ def handle_forward(message):
         bot.reply_to(message, f"{info['item_id']} sold.")
         return
 
-    # Show crypto choice
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("Bitcoin",  callback_data=f"crypto_BTC_{info['item_id']}_{info['price']}"),
-        types.InlineKeyboardButton("Zcash",    callback_data=f"crypto_ZEC_{info['item_id']}_{info['price']}")
+        types.InlineKeyboardButton("Bitcoin", callback_data=f"crypto_BTC_{info['item_id']}_{info['price']}"),
+        types.InlineKeyboardButton("Zcash",   callback_data=f"crypto_ZEC_{info['item_id']}_{info['price']}")
     )
-
-    bot.send_message(
-        message.chat.id,
+    bot.send_message(message.chat.id,
         f"{info['item_id']}\n{info['name']}\n\n${info['price']} USD\n\nChoose payment method:",
-        reply_markup=markup
-    )
+        reply_markup=markup)
 
-# USER CHOOSES BTC OR ZEC
 @bot.callback_query_handler(func=lambda call: call.data.startswith("crypto_"))
 def crypto_chosen(call):
     crypto, item_id, price = call.data.split("_")[1:]
@@ -95,15 +94,13 @@ ${price} USD
     support_url = f"https://t.me/{SUPPORT_USERNAME}?text=Payment%20done%20–%20{item_id}%20–%20{price}%20USD%20via%20{crypto}"
     markup.add(types.InlineKeyboardButton("I Paid", url=support_url))
 
-    bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id,
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
                           reply_markup=markup, parse_mode="HTML")
 
-# COPY BUTTON
 @bot.callback_query_handler(func=lambda c: c.data.startswith("copy_"))
 def copy_addr(c):
     bot.answer_callback_query(c.id, c.data[5:], show_alert=True)
 
-# Flask health check for Koyeb
 @app.route('/')
 def home(): return "running"
 
