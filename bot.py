@@ -7,117 +7,106 @@ from flask import Flask
 
 app = Flask(__name__)
 
-# ====== CHANGE ONLY THESE 3 LINES ======
-BOT_TOKEN = "8575320394:AAEKlwpqbny9H2MEz8tXMSNStmvHRG9KMOM"          # From @BotFather
-CHANNEL_USERNAME = "@DarkWeb_MarketStore"               # Your channel with @
-SUPPORT_USERNAME = "@Backdoor_Operator"            # Without @
-# =======================================
+# YOUR REAL DATA
+BOT_TOKEN        = "8575320394:AAEKlwpqbny9H2MEz8tXMSNStmvHRG9KMOM"
+CHANNEL_USERNAME = "@DarkWeb_MarketStore"
+SUPPORT_USERNAME = "Backdoor_Operator"
+
+BTC_WALLET  = "bc1qydlfhxwkv50zcxzc5z5evuadhfh7dsexg9wqtt"
+ZEC_WALLET  = "0x0aD8F727EB6869a0b48f1C4E8AF6dcEde56003Be"   # replace if you use shielded t-addr or z-addr later
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-def get_btc_price():
+def get_price(crypto="bitcoin"):
     try:
-        r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd", timeout=5)
-        return r.json()["bitcoin"]["usd"]
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto}&vs_currencies=usd"
+        return requests.get(url, timeout=5).json()[crypto]["usd"]
     except:
-        return 96000
+        return 100000 if crypto == "bitcoin" else 200
 
 def parse_product(text):
-    if not text or "#DH" not in text:
-        return None
-    lines = text.strip().split("\n")
+    if not text or "#DH" not in text: return None
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
     item_id = lines[0].split()[0]
-    name = lines[1].strip() if len(lines) > 1 else "Unknown Item"
+    name = " ".join(lines[1:2]) if len(lines)>1 else "Item"
     price_match = re.search(r'\$([0-9,]+)', text)
-    price = int(price_match.group(1).replace(",", "")) if price_match else None
-    if price is None:
-        return None
-    if any(x in text.lower() for x in ["sold", "taken", "reserved"]):
-        return {**locals(), "status": "SOLD"}
-    return {"item_id": item_id, "name": name, "price": price, "status": "AVAILABLE"}
+    if not price_match: return None
+    price = int(price_match.group(1).replace(",",""))
+    if any(w in text.lower() for w in ["sold","taken","reserved"]):
+        return {"status":"SOLD","item_id":item_id}
+    return {"item_id":item_id, "name":name, "price":price, "status":"AVAILABLE"}
 
-main_menu = types.ReplyKeyboardMarkup(resize_keyboard=True)
-main_menu.add("Browse Products", "Service & Delivery")
-main_menu.add("How to Order", "Live Support")
-
-@bot.message_handler(commands=['start'])
-def start(m):
-    bot.send_message(m.chat.id, "Drop active.\nForward any #DHxxxx post to order.", reply_markup=main_menu)
-
-@bot.message_handler(func=lambda m: m.text == "Browse Products")
-def browse(m):
-    bot.send_message(m.chat.id, "Forward product post from channel.\nOnly #DHxxxx accepted.")
-
-@bot.message_handler(func=lambda m: m.text == "Service & Delivery")
-def service(m):
-    bot.send_message(m.chat.id, "Ethiopia → 3–7 days\nWorldwide → 8–12 days\nBTC only • No logs")
-
-@bot.message_handler(func=lambda m: m.text == "How to Order")
-def howto(m):
-    bot.send_message(m.chat.id, "1. Forward post\n2. Send exact $ in BTC\n3. We confirm instantly")
-
-@bot.message_handler(func=lambda m: m.text == "Live Support")
-def support(m):
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("Open Support", url=f"https://t.me/{SUPPORT_USERNAME}"))
-    bot.send_message(m.chat.id, "Tap to contact support:", reply_markup=markup)
-
+# MAIN FLOW
 @bot.message_handler(content_types=['text'])
-def handle_text(m):
-    if not m.forward_from_chat:
-        return
-    if f"@{m.forward_from_chat.username}" != CHANNEL_USERNAME:
-        bot.reply_to(m, "Wrong channel.")
+def handle_forward(message):
+    if not message.forward_from_chat or f"@{message.forward_from_chat.username}" != CHANNEL_USERNAME:
         return
 
-    info = parse_product(m.text or m.caption)
+    info = parse_product(message.text or message.caption)
     if not info:
-        bot.reply_to(m, "Invalid post format.")
+        bot.reply_to(message, "Invalid post.")
         return
     if info["status"] == "SOLD":
-        bot.reply_to(m, f"{info['item_id']} – SOLD\nCheck new drops.")
+        bot.reply_to(message, f"{info['item_id']} sold.")
         return
 
-    btc_price = get_btc_price()
-    btc_amount = round(info["price"] / btc_price, 8)
-    wallet = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"  # Change per order
+    # Show crypto choice
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("Bitcoin",  callback_data=f"crypto_BTC_{info['item_id']}_{info['price']}"),
+        types.InlineKeyboardButton("Zcash",    callback_data=f"crypto_ZEC_{info['item_id']}_{info['price']}")
+    )
+
+    bot.send_message(
+        message.chat.id,
+        f"{info['item_id']}\n{info['name']}\n\n${info['price']} USD\n\nChoose payment method:",
+        reply_markup=markup
+    )
+
+# USER CHOOSES BTC OR ZEC
+@bot.callback_query_handler(func=lambda call: call.data.startswith("crypto_"))
+def crypto_chosen(call):
+    crypto, item_id, price = call.data.split("_")[1:]
+    price = int(price)
+
+    if crypto == "BTC":
+        wallet = BTC_WALLET
+        rate = get_price("bitcoin")
+        amount = round(price / rate, 8)
+        coin = "BTC"
+    else:
+        wallet = ZEC_WALLET
+        rate = get_price("zcash")
+        amount = round(price / rate, 6)
+        coin = "ZEC"
 
     text = f"""
-{info['item_id']} – Bitcoin Payment
+{item_id}
+{call.message.text.split('\n')[1]}
 
-Send exactly ${info['price']}.00 USD
-≈ {btc_amount} BTC (live)
+${price} USD
+≈ {amount} {coin}
 
-Wallet:
 <code>{wallet}</code>
-
-25:00 minutes left
-We detect payment instantly.
     """.strip()
 
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("Copy BTC Amount", callback_data=f"copy_{btc_amount}"))
     markup.add(types.InlineKeyboardButton("Copy Address", callback_data=f"copy_{wallet}"))
-    markup.add(types.InlineKeyboardButton("Support", url=f"https://t.me/{SUPPORT_USERNAME}?text=Order%20{info['item_id']}"))
+    support_url = f"https://t.me/{SUPPORT_USERNAME}?text=Payment%20done%20–%20{item_id}%20–%20{price}%20USD%20via%20{crypto}"
+    markup.add(types.InlineKeyboardButton("I Paid", url=support_url))
 
-    bot.send_message(m.chat.id, text, reply_markup=markup, parse_mode="HTML")
+    bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id,
+                          reply_markup=markup, parse_mode="HTML")
 
+# COPY BUTTON
 @bot.callback_query_handler(func=lambda c: c.data.startswith("copy_"))
-def copy(c):
+def copy_addr(c):
     bot.answer_callback_query(c.id, c.data[5:], show_alert=True)
 
-# Start bot polling in background thread
-def start_bot():
-    print("Bot starting...")
-    bot.infinity_polling()
+# Flask health check for Koyeb
+@app.route('/')
+def home(): return "running"
 
-if __name__ == '__main__':
-    # Start bot in thread
-    threading.Thread(target=start_bot, daemon=True).start()
-    
-    # Minimal Flask to keep service alive (Koyeb requires it)
-    @app.route('/')
-    def health():
-        return "Bot running"
-    
-    app.run(host='0.0.0.0', port=8000)
+if __name__ == "__main__":
+    threading.Thread(target=bot.infinity_polling, daemon=True).start()
+    app.run(host="0.0.0.0", port=8000)
