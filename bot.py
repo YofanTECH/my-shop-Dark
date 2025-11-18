@@ -8,20 +8,18 @@ import time
 
 app = Flask(__name__)
 
-# YOUR DATA
 BOT_TOKEN        = "8575320394:AAEKlwpqbny9H2MEz8tXMSNStmvHRG9KMOM"
 CHANNEL_USERNAME = "@DarkWeb_MarketStore"
 CHANNEL_ID       = "@DarkWeb_MarketStore"
 SUPPORT_USERNAME = "Backdoor_Operator"
 
 BTC_WALLET = "bc1qydlfhxwkv50zcxzc5z5evuadhfh7dsexg9wqtt"
-ZEC_WALLET = "t1gZ4X8wZ9v5Kj9fK9fK9fK9fK9fK9fK9fK"   # change if you want
+ZEC_WALLET = "t1gZ4X8wZ9v5Kj9fK9fK9fK9fK9fK9fK9fK"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 bot.remove_webhook()
 time.sleep(2)
 
-# Live prices
 def get_live_price(crypto="bitcoin"):
     try:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto}&vs_currencies=usd"
@@ -30,17 +28,11 @@ def get_live_price(crypto="bitcoin"):
         return 101500 if crypto == "bitcoin" else 210
 
 def parse_product(text):
-    if not text or "#DH" not in text:
-        return None
-
+    if not text or "#DH" not in text: return None
     lines = [l.strip() for l in text.split("\n") if l.strip()]
-    if len(lines) < 3:
-        return None
+    if len(lines) < 2: return None
 
-    item_id = re.search(r'#DH\d+', lines[0])
-    if not item_id: return None
-    item_id = item_id.group()
-
+    item_id = re.search(r'#DH\d+', lines[0]).group()
     name = lines[1]
 
     price_match = re.search(r'\$([0-9,]+)', text)
@@ -50,20 +42,14 @@ def parse_product(text):
     status_line = next((l for l in lines if l.lower().startswith("status:")), "Status: Available")
     status = "SOLD" if "sold" in status_line.lower() else "AVAILABLE"
 
-    return {
-        "item_id": item_id,
-        "name": name,
-        "price": price,
-        "status": status
-    }
+    return {"item_id": item_id, "name": name, "price": price, "status": status}
 
 def is_member(user_id):
     try:
-        return bot.get_chat_member(CHANNEL_ID, user_id).status in ["member", "administrator", "administrator", "creator"]
+        return bot.get_chat_member(CHANNEL_ID, user_id).status in ["member", "administrator", "creator"]
     except:
         return False
 
-# /start
 @bot.message_handler(commands=['start'])
 def start(msg):
     markup = types.InlineKeyboardMarkup()
@@ -71,8 +57,8 @@ def start(msg):
     bot.send_message(msg.chat.id,
         "<b>DARKWEB PRODUCTS</b>\n"
         "Worldwide underground prices | Fast delivery\n"
-        "We source globally - you pay less | BTC · ZEC\n\n"
-        f"Join the channel to continue:\n{CHANNEL_USERNAME}",
+        "We source globally — you pay less | BTC · ZEC\n\n"
+        f"Join the channel first:\n{CHANNEL_USERNAME}",
         parse_mode="HTML", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: c.data == "check_join")
@@ -81,10 +67,10 @@ def check_join(call):
         bot.edit_message_text("Access granted.\nForward any product post to order.",
                               call.message.chat.id, call.message.message_id)
     else:
-        bot.answer_callback_query(call.id, "You didn't join the channel.", show_alert=True)
+        bot.answer_callback_query(call.id, "Join the channel first.", show_alert=True)
 
-# Forward handler
-@bot.message_handler(content_types=['text'])
+# Works with photo + caption AND text posts
+@bot.message_handler(content_types=['text', 'photo', 'video'])
 def handle_forward(message):
     if not message.forward_from_chat or f"@{message.forward_from_chat.username}" != CHANNEL_USERNAME:
         return
@@ -92,20 +78,21 @@ def handle_forward(message):
         bot.reply_to(message, "Join the channel first.")
         return
 
-    info = parse_product(message.text or message.caption)
-    if not info:
-        bot.reply_to(message, "Invalid product format.")
-        return
+    # Get text from caption OR normal text
+    text = message.caption if message.caption else message.text
+    if not text: return
 
+    info = parse_product(text)
+    if not info:
+        bot.reply_to(message, "Invalid format.")
+        return
     if info["status"] == "SOLD":
         bot.reply_to(message, f"{info['item_id']} – SOLD")
         return
 
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("Bitcoin", callback_data=f"pay_BTC_{info['item_id']}_{info['price']}"),
-        types.InlineKeyboardButton("Zcash",   callback_data=f"pay_ZEC_{info['item_id']}_{info['price']}")
-    )
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("Bitcoin", callback_data=f"pay_BTC_{info['item_id']}_{info['price']}"))
+    markup.add(types.InlineKeyboardButton("Zcash",   callback_data=f"pay_ZEC_{info['item_id']}_{info['price']}"))
 
     bot.send_message(message.chat.id,
  f"""{info['item_id']}
@@ -116,7 +103,6 @@ Worldwide delivery: 8–12 days
 
 Select payment:""", reply_markup=markup)
 
-# Payment selection
 @bot.callback_query_handler(func=lambda c: c.data.startswith("pay_"))
 def show_payment(call):
     crypto, item_id, price = call.data.split("_")[1:]
