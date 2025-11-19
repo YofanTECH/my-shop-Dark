@@ -29,7 +29,7 @@ def parse_product(text):
     if not text or "#DH" not in text: return None
     item_id = re.search(r'#DH\d+', text).group()
     lines = [l.strip() for l in text.split('\n') if l.strip()]
-    name = lines[1] if len(lines) > 1 else "Item"
+    name = lines[1] if len(lines) > 1 else "Unknown Item"
     price_match = re.search(r'\$([0-9,]+)', text)
     if not price_match: return None
     price = int(price_match.group(1).replace(",", ""))
@@ -65,6 +65,9 @@ def check_join(call):
     else:
         bot.answer_callback_query(call.id, "Join the channel first.", show_alert=True)
 
+# Store product name when forwarding
+product_names = {}
+
 @bot.message_handler(content_types=['photo', 'text'])
 def handle_forward(message):
     if not message.forward_from_chat or message.forward_from_chat.username != CHANNEL_USERNAME[1:]:
@@ -82,6 +85,9 @@ def handle_forward(message):
         bot.reply_to(message, f"{info['item_id']} – SOLD")
         return
 
+    # Save name for later use
+    product_names[message.chat.id] = info["name"]
+
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("Bitcoin", callback_data=f"pay_BTC_{info['item_id']}_{info['price']}"))
     markup.add(types.InlineKeyboardButton("Zcash",   callback_data=f"pay_ZEC_{info['item_id']}_{info['price']}"))
@@ -97,8 +103,15 @@ def handle_forward(message):
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("pay_"))
 def show_payment(call):
-    crypto, item_id, price = call.data.split("_", 2)[1:]
-    price = int(price.split("_")[0])
+    try:
+        crypto, item_id, price = call.data.split("_", 2)[1:]
+        price = int(price)
+    except:
+        bot.answer_callback_query(call.id, "Error. Try again.")
+        return
+
+    # Get saved product name (safe way)
+    product_name = product_names.get(call.message.chat.id, "Item")
 
     if crypto == "BTC":
         wallet = BTC_WALLET
@@ -110,7 +123,7 @@ def show_payment(call):
         coin = "ZEC"
 
     text = f"<b>{item_id} Verified</b>\n" \
-           f"{call.message.html_text.split('</b>')[1].split('<b>')[0].split('Worldwide')[0].strip()}\n\n" \
+           f"{product_name}\n\n" \
            f"<b>${price} USD</b>\n" \
            f"≈ <code>{amount}</code> {coin} (live)\n\n" \
            f"<code>{wallet}</code>\n\n" \
@@ -121,8 +134,12 @@ def show_payment(call):
     markup.add(types.InlineKeyboardButton("Copy Address", callback_data=f"copy_{wallet}"))
     markup.add(types.InlineKeyboardButton("I Paid", url=f"https://t.me/{SUPPORT_USERNAME}"))
 
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
-                          parse_mode="HTML", reply_markup=markup)
+    try:
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
+                              parse_mode="HTML", reply_markup=markup)
+    except Exception as e:
+        print(e)  # for logs
+        bot.answer_callback_query(call.id, "Error. Try again.")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("copy_"))
 def copy(c):
@@ -130,7 +147,7 @@ def copy(c):
 
 @app.route('/')
 def home():
-    return "DarkWeb Bot Running – Fast & Silent"
+    return "Bot Running – Fixed & Fast"
 
 if __name__ == "__main__":
     threading.Thread(target=bot.infinity_polling, kwargs={"none_stop": True}, daemon=True).start()
