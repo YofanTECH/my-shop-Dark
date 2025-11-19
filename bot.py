@@ -3,7 +3,7 @@ from telebot import types
 import requests
 import re
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask
 
 app = Flask(__name__)
@@ -19,9 +19,6 @@ ZEC_WALLET = "t1P3JNGK4q8RdTL9NTav6J5kzGcWitPXX7k"
 bot = telebot.TeleBot(BOT_TOKEN)
 bot.remove_webhook()
 
-# Store: {message_id: {"expiry": time, "chat_id": id, "base_text": text}}
-active_orders = {}
-
 def get_live_price(crypto="bitcoin"):
     try:
         return requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={crypto}&vs_currencies=usd", timeout=6).json()[crypto]["usd"]
@@ -32,7 +29,7 @@ def parse_product(text):
     if not text or "#DH" not in text: return None
     item_id = re.search(r'#DH\d+', text).group()
     lines = [l.strip() for l in text.split('\n') if l.strip()]
-    name = lines[1] if len(lines) > 1 else "Unknown Item"
+    name = lines[1] if len(lines) > 1 else "Item"
     price_match = re.search(r'\$([0-9,]+)', text)
     if not price_match: return None
     price = int(price_match.group(1).replace(",", ""))
@@ -79,7 +76,7 @@ def handle_forward(message):
     text = message.caption if message.caption else message.text
     info = parse_product(text)
     if not info:
-        bot.reply_to(message, "Invalid product format.")
+        bot.reply_to(message, "Invalid format.")
         return
     if info["status"] == "SOLD":
         bot.reply_to(message, f"{info['item_id']} – SOLD")
@@ -100,9 +97,8 @@ def handle_forward(message):
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("pay_"))
 def show_payment(call):
-    crypto, item_id, price_str = call.data.split("_", 2)[1:]
-    price = int(price_str.split("_")[0])
-    expiry = datetime.now() + timedelta(minutes=20)
+    crypto, item_id, price = call.data.split("_", 2)[1:]
+    price = int(price.split("_")[0])
 
     if crypto == "BTC":
         wallet = BTC_WALLET
@@ -113,52 +109,20 @@ def show_payment(call):
         amount = round(price / get_live_price("zcash"), 6)
         coin = "ZEC"
 
-    base_text = f"<b>{item_id} Verified</b>\n" \
-                f"{call.message.html_text.split('</b>')[1].split('<b>')[0].split('Worldwide')[0].strip()}\n\n" \
-                f"<b>${price} USD</b>\n" \
-                f"≈ <code>{amount}</code> {coin}\n\n" \
-                f"<code>{wallet}</code>\n\n" \
-                f"Expires in: {{}}\n" \
-                f"Worldwide · 8–12 days\n" \
-                f"Time: {get_time()}"
+    text = f"<b>{item_id} Verified</b>\n" \
+           f"{call.message.html_text.split('</b>')[1].split('<b>')[0].split('Worldwide')[0].strip()}\n\n" \
+           f"<b>${price} USD</b>\n" \
+           f"≈ <code>{amount}</code> {coin} (live)\n\n" \
+           f"<code>{wallet}</code>\n\n" \
+           f"Worldwide · 8–12 days\n" \
+           f"Time: {get_time()}"
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("Copy Address", callback_data=f"copy_{wallet}"))
     markup.add(types.InlineKeyboardButton("I Paid", url=f"https://t.me/{SUPPORT_USERNAME}"))
 
-    bot.edit_message_text(base_text.format("20:00"), call.message.chat.id, call.message.message_id,
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
                           parse_mode="HTML", reply_markup=markup)
-
-    # Save order
-    msg_id = call.message.message_id
-    active_orders[msg_id] = {
-        "expiry": expiry,
-        "chat_id": call.message.chat.id,
-        "base_text": base_text,
-        "markup": markup
-    }
-
-    # Live countdown
-    def countdown():
-        while msg_id in active_orders:
-            remaining = int((active_orders[msg_id]["expiry"] - datetime.now()).total_seconds())
-            if remaining <= 0:
-                bot.edit_message_text("<b>Payment window closed</b>\nAddress expired.", 
-                                    active_orders[msg_id]["chat_id"], msg_id, parse_mode="HTML")
-                active_orders.pop(msg_id, None)
-                break
-            mins, secs = divmod(remaining, 60)
-            try:
-                bot.edit_message_text(
-                    active_orders[msg_id]["base_text"].format(f"{mins:02d}:{secs:02d}"),
-                    active_orders[msg_id]["chat_id"], msg_id,
-                    parse_mode="HTML", reply_markup=active_orders[msg_id]["markup"]
-                )
-            except:
-                pass
-            time.sleep(10)
-
-    threading.Thread(target=countdown, daemon=True).start()
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("copy_"))
 def copy(c):
@@ -166,7 +130,7 @@ def copy(c):
 
 @app.route('/')
 def home():
-    return "DarkWeb Bot Running | Nov 18, 2025"
+    return "DarkWeb Bot Running – Fast & Silent"
 
 if __name__ == "__main__":
     threading.Thread(target=bot.infinity_polling, kwargs={"none_stop": True}, daemon=True).start()
