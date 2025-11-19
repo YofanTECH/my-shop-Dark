@@ -10,8 +10,8 @@ app = Flask(__name__)
 
 # === CONFIG ===
 BOT_TOKEN = "8575320394:AAEKlwpqbny9H2MEz8tXMSNStmvHRG9KMOM"
-CHANNEL_USERNAME = "@DarkWeb_MarketStore"
-CHANNEL_ID = "@DarkWeb_MarketStore"  # Can be username or ID
+CHANNEL_USERNAME = "@DarkWeb_MarketStore"        # With @
+CHANNEL_ID = "@DarkWeb_MarketStore"
 SUPPORT_USERNAME = "Backdoor_Operator"
 BTC_WALLET = "bc1qydlfhxwkv50zcxzc5z5evuadhfh7dsexg9wqtt"
 ZEC_WALLET = "t1P3JNGK4q8RdTL9NTav6J5kzGcWitPXX7k"
@@ -19,16 +19,14 @@ ZEC_WALLET = "t1P3JNGK4q8RdTL9NTav6J5kzGcWitPXX7k"
 bot = telebot.TeleBot(BOT_TOKEN)
 bot.remove_webhook()
 
-# Temporary storage
+# Cache & storage
 product_names = {}
-
-# === PRICE FETCH WITH CACHE ===
 price_cache = {"bitcoin": {"price": 0, "time": 0}, "zcash": {"price": 0, "time": 0}}
 
 def get_live_price(crypto="bitcoin"):
     now = datetime.now().timestamp()
     cache = price_cache[crypto]
-    if now - cache["time"] < 60:  # Cache for 60 seconds
+    if now - cache["time"] < 60:
         return cache["price"] if cache["price"] > 0 else 103000 if crypto == "bitcoin" else 185
 
     try:
@@ -39,24 +37,29 @@ def get_live_price(crypto="bitcoin"):
         price_cache[crypto] = {"price": price, "time": now}
         return price
     except Exception as e:
-        print(f"Price fetch failed ({crypto}): {e}")
+        print(f"Price error ({crypto}): {e}")
         return 103000 if crypto == "bitcoin" else 185
 
-# === HELPER FUNCTIONS ===
 def parse_product(text):
     if not text or "#DH" not in text:
         return None
-    item_id_match = re.search(r'#DH\d+', text)
-    if not item_id_match:
-        return None
-    item_id = item_id_match.group()
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-    name = lines[1] if len(lines) > 1 else "Unknown Item"
-    price_match = re.search(r'\$([0-9,]+)', text)
+
+    # Extract #DHxxxx
+    item_id = re.search(r'#DH\d+', text).group()
+
+    # Extract price
+    price_match = re.search(r'(\d+)\s*USD', text, re.IGNORECASE)
     if not price_match:
         return None
-    price = int(price_match.group(1).replace(",", ""))
-    status = "SOLD" if any("sold" in l.lower() for l in lines) else "AVAILABLE"
+    price = int(price_match.group(1))
+
+    # Extract product name (second line usually)
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    name = lines[1] if len(lines) > 1 else "Unknown Item"
+
+    # Check if sold
+    status = "SOLD" if re.search(r'status:\s*sold', text, re.IGNORECASE) else "AVAILABLE"
+
     return {"item_id": item_id, "name": name, "price": price, "status": status}
 
 def is_member(user_id):
@@ -69,7 +72,7 @@ def is_member(user_id):
 def get_time():
     return datetime.now().strftime("%b %d, %Y – %I:%M %p EAT")
 
-# === HANDLERS ===
+# === START ===
 @bot.message_handler(commands=['start'])
 def start(msg):
     markup = types.InlineKeyboardMarkup()
@@ -78,25 +81,30 @@ def start(msg):
         "<b>DARKWEB PRODUCTS</b>\n"
         "Worldwide underground prices | Fast delivery\n"
         "We source globally — you pay less | BTC · ZEC\n\n"
-        f"Join the channel first:\n{CHANNEL_USERNAME}\n\n"
+        f"Join our channel first:\n{CHANNEL_USERNAME}\n\n"
         f"Time: {get_time()}",
         parse_mode="HTML", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: c.data == "check_join")
 def check_join(call):
     if is_member(call.from_user.id):
-        bot.edit_message_text("Access granted.\nForward any product post to order.",
+        bot.edit_message_text("Access granted.\nForward any product post from our channel to order.",
                               call.message.chat.id, call.message.message_id)
         bot.answer_callback_query(call.id, "Welcome!")
     else:
-        bot.answer_callback_query(call.id, "Join the channel first.", show_alert=True)
+        bot.answer_callback_query(call.id, "You must join the channel first!", show_alert=True)
 
+# === FORWARD HANDLER ===
 @bot.message_handler(content_types=['photo', 'text'])
 def handle_forward(message):
     if not message.forward_from_chat:
         return
+
+    # Block wrong channels
     if message.forward_from_chat.username != CHANNEL_USERNAME[1:]:
+        bot.reply_to(message, f"Please forward products only from {CHANNEL_USERNAME}")
         return
+
     if not is_member(message.from_user.id):
         bot.reply_to(message, "Join the channel first.")
         return
@@ -109,12 +117,17 @@ def handle_forward(message):
     if not info:
         bot.reply_to(message, "Invalid product format.")
         return
+
     if info["status"] == "SOLD":
-        bot.reply_to(message, f"{info['item_id']} – SOLD")
+        bot.reply_to(message, f"{info['item_id']} – SOLD OUT")
         return
 
-    # Save product name for this user
-    product_names[message.chat.id] = info["name"]
+    # Save for later
+    product_names[message.chat.id] = {
+        "name": info["name"],
+        "item_id": info["item_id"],
+        "price": info["price"]
+    }
 
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
@@ -131,21 +144,21 @@ def handle_forward(message):
         "Choose payment method:",
         parse_mode="HTML", reply_markup=markup)
 
+# === PAYMENT INFO ===
 @bot.callback_query_handler(func=lambda c: c.data.startswith("pay_"))
 def show_payment(call):
     try:
         parts = call.data.split("_")
-        if len(parts) != 4:
-            raise ValueError("Invalid callback format")
-        crypto = parts[1]      # BTC or ZEC
-        item_id = parts[2]     # #DH4471
-        price = int(parts[3])  # 720
-    except Exception as e:
-        print(f"Callback parse error: {e} | data: {call.data}")
+        crypto = parts[1]
+        item_id = parts[2]
+        price = int(parts[3])
+    except:
         bot.answer_callback_query(call.id, "Error. Try again.", show_alert=True)
         return
 
-    product_name = product_names.get(call.from_user.id, "Item")
+    user_data = product_names.get(call.from_user.id, {})
+    product_name = user_data.get("name", "Item")
+    item_id_saved = user_data.get("item_id", item_id)
 
     if crypto == "BTC":
         wallet = BTC_WALLET
@@ -156,42 +169,53 @@ def show_payment(call):
         amount = round(price / get_live_price("zcash"), 6)
         coin = "ZEC"
 
+    # Pre-filled message for support
+    support_text = (
+        f"NEW ORDER\n\n"
+        f"Product: {product_name}\n"
+        f"Item ID: {item_id_saved}\n"
+        f"Price: ${price:,} USD\n"
+        f"Paid with: {coin}\n"
+        f"Amount sent: {amount} {coin}\n\n"
+        f"Please check payment and start my order"
+    )
+    support_url = f"https://t.me/{SUPPORT_USERNAME}?text={requests.utils.quote(support_text)}"
+
     text = (
         f"<b>{item_id} Verified</b>\n"
         f"{product_name}\n\n"
         f"<b>${price:,} USD</b>\n"
-        f"≈ <code>{amount}</code> {coin} (live rate)\n\n"
-        f"<b>Send exactly this amount to:</b>\n"
+        f"≈ <code>{amount}</code> {coin} (live)\n\n"
+        f"<b>Send to this wallet:</b>\n"
         f"<code>{wallet}</code>\n\n"
-        f"Worldwide · 8–12 days delivery\n"
+        f"Worldwide · 8–12 days\n"
         f"Time: {get_time()}"
     )
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("Copy Wallet Address", callback_data=f"copy_{wallet}"))
-    markup.add(types.InlineKeyboardButton("I Paid – Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}"))
+    markup.add(types.InlineKeyboardButton("I Paid – Contact Support", url=support_url))
 
     try:
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
                               parse_mode="HTML", reply_markup=markup)
-        # Clear saved name after use
+        # Clean up
         product_names.pop(call.from_user.id, None)
     except Exception as e:
-        print(f"Edit message failed: {e}")
-        bot.answer_callback_query(call.id, "Error. Try again.")
+        print(f"Edit failed: {e}")
+        bot.answer_callback_query(call.id, "Try again.")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("copy_"))
 def copy_wallet(call):
     wallet = call.data[5:]
     bot.answer_callback_query(call.id, wallet, show_alert=True)
 
-# === FLASK KEEP-ALIVE ===
+# === FLASK ===
 @app.route('/')
 def home():
-    return "DarkWeb Products Bot – Running Smoothly"
+    return "DarkWeb Bot Running | All Good"
 
-# === RUN BOT + WEB SERVER ===
 if __name__ == "__main__":
-    print("Bot started...")
+    print("Bot Started Successfully!")
     threading.Thread(target=bot.infinity_polling, kwargs={"none_stop": True}, daemon=True).start()
     app.run(host="0.0.0.0", port=8000)
