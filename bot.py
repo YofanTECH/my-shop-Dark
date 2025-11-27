@@ -5,14 +5,16 @@ import re
 import threading
 from datetime import datetime
 from flask import Flask
+import os  # ← REQUIRED FOR RAILWAY
 
 app = Flask(__name__)
 
 # === CONFIG ===
 BOT_TOKEN = "8575320394:AAHTTuOEEEJ1bN2XBSidHpTFer_785X5e6A"
-CHANNEL_USERNAME = "@DarkWeb_MarketStore"        # With @
+CHANNEL_USERNAME = "@DarkWeb_MarketStore"
 CHANNEL_ID = "@DarkWeb_MarketStore"
 SUPPORT_USERNAME = "Backdoor_Operator"
+
 BTC_WALLET = "bc1qydlfhxwkv50zcxzc5z5evuadhfh7dsexg9wqtt"
 ZEC_WALLET = "t1P3JNGK4q8RdTL9NTav6J5kzGcWitPXX7k"
 
@@ -26,53 +28,39 @@ price_cache = {"bitcoin": {"price": 0, "time": 0}, "zcash": {"price": 0, "time":
 def get_live_price(crypto="bitcoin"):
     now = datetime.now().timestamp()
     cache = price_cache[crypto]
-    if now - cache["time"] < 60:
-        return cache["price"] if cache["price"] > 0 else 103000 if crypto == "bitcoin" else 185
-
+    if cache["price"] > 0 and now - cache["time"] < 60:
+        return cache["price"]
     try:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto}&vs_currencies=usd"
-        resp = requests.get(url, timeout=8)
-        resp.raise_for_status()
-        price = resp.json()[crypto]["usd"]
+        price = requests.get(url, timeout=8).json()[crypto]["usd"]
         price_cache[crypto] = {"price": price, "time": now}
         return price
-    except Exception as e:
-        print(f"Price error ({crypto}): {e}")
+    except:
         return 103000 if crypto == "bitcoin" else 185
 
 def parse_product(text):
     if not text or "#DH" not in text:
         return None
-
-    # Extract #DHxxxx
     item_id = re.search(r'#DH\d+', text).group()
-
-    # Extract price
     price_match = re.search(r'(\d+)\s*USD', text, re.IGNORECASE)
     if not price_match:
         return None
     price = int(price_match.group(1))
-
-    # Extract product name (second line usually)
     lines = [l.strip() for l in text.split('\n') if l.strip()]
-    name = lines[1] if len(lines) > 1 else "Unknown Item"
-
-    # Check if sold
+    name = lines[1] if len(lines) > 1 else "Item"
     status = "SOLD" if re.search(r'status:\s*sold', text, re.IGNORECASE) else "AVAILABLE"
-
     return {"item_id": item_id, "name": name, "price": price, "status": status}
 
 def is_member(user_id):
     try:
-        member = bot.get_chat_member(CHANNEL_ID, user_id)
-        return member.status in ["member", "administrator", "creator"]
+        return bot.get_chat_member(CHANNEL_ID, user_id).status in ["member", "administrator", "creator"]
     except:
         return False
 
 def get_time():
     return datetime.now().strftime("%b %d, %Y – %I:%M %p EAT")
 
-# === START ===
+# === HANDLERS ===
 @bot.message_handler(commands=['start'])
 def start(msg):
     markup = types.InlineKeyboardMarkup()
@@ -90,51 +78,34 @@ def check_join(call):
     if is_member(call.from_user.id):
         bot.edit_message_text("Access granted.\nForward any product post from our channel to order.",
                               call.message.chat.id, call.message.message_id)
-        bot.answer_callback_query(call.id, "Welcome!")
+        bot.answer_callback_query(call.id, "Welcome!", show_alert=False)
     else:
         bot.answer_callback_query(call.id, "You must join the channel first!", show_alert=True)
 
-# === FORWARD HANDLER ===
 @bot.message_handler(content_types=['photo', 'text'])
 def handle_forward(message):
-    if not message.forward_from_chat:
+    if not message.forward_from_chat or message.forward_from_chat.username != CHANNEL_USERNAME[1:]:
         return
-
-    # Block wrong channels
-    if message.forward_from_chat.username != CHANNEL_USERNAME[1:]:
-        bot.reply_to(message, f"Please forward products only from {CHANNEL_USERNAME}")
-        return
-
     if not is_member(message.from_user.id):
         bot.reply_to(message, "Join the channel first.")
         return
 
-    text = message.caption if hasattr(message, 'caption') and message.caption else message.text
-    if not text:
-        return
-
+    text = message.caption or message.text or ""
     info = parse_product(text)
     if not info:
         bot.reply_to(message, "Invalid product format.")
         return
-
     if info["status"] == "SOLD":
         bot.reply_to(message, f"{info['item_id']} – SOLD OUT")
         return
 
-    # Save for later
-    product_names[message.chat.id] = {
-        "name": info["name"],
-        "item_id": info["item_id"],
-        "price": info["price"]
-    }
+    product_names[message.chat.id] = info
 
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
         types.InlineKeyboardButton("Bitcoin", callback_data=f"pay_BTC_{info['item_id']}_{info['price']}"),
-        types.InlineKeyboardButton("Zcash", callback_data=f"pay_ZEC_{info['item_id']}_{info['price']}")
+        types.InlineKeyboardButton("Zcash",   callback_data=f"pay_ZEC_{info['item_id']}_{info['price']}")
     )
-
     bot.send_message(message.chat.id,
         f"<b>{info['item_id']} Verified</b>\n"
         f"{info['name']}\n\n"
@@ -144,22 +115,17 @@ def handle_forward(message):
         "Choose payment method:",
         parse_mode="HTML", reply_markup=markup)
 
-# === PAYMENT INFO ===
 @bot.callback_query_handler(func=lambda c: c.data.startswith("pay_"))
 def show_payment(call):
     try:
-        parts = call.data.split("_")
-        crypto = parts[1]
-        item_id = parts[2]
-        price = int(parts[3])
+        _, crypto, item_id, price_str = call.data.split("_", 3)
+        price = int(price_str)
     except:
         bot.answer_callback_query(call.id, "Error. Try again.", show_alert=True)
         return
 
-    user_data = product_names.get(call.from_user.id, {})
-    product_name = user_data.get("name", "Item")
-    item_id_saved = user_data.get("item_id", item_id)
-
+    info = product_names.get(call.from_user.id, {"name": "Item", "item_id": item_id})
+    
     if crypto == "BTC":
         wallet = BTC_WALLET
         amount = round(price / get_live_price("bitcoin"), 8)
@@ -169,53 +135,49 @@ def show_payment(call):
         amount = round(price / get_live_price("zcash"), 6)
         coin = "ZEC"
 
-    # Pre-filled message for support
     support_text = (
         f"NEW ORDER\n\n"
-        f"Product: {product_name}\n"
-        f"Item ID: {item_id_saved}\n"
+        f"Product: {info['name']}\n"
+        f"Item ID: {info['item_id']}\n"
         f"Price: ${price:,} USD\n"
         f"Paid with: {coin}\n"
         f"Amount sent: {amount} {coin}\n\n"
-        f"Please check payment and start my order"
+        f"Confirm payment & start delivery"
     )
     support_url = f"https://t.me/{SUPPORT_USERNAME}?text={requests.utils.quote(support_text)}"
 
     text = (
         f"<b>{item_id} Verified</b>\n"
-        f"{product_name}\n\n"
+        f"{info['name']}\n\n"
         f"<b>${price:,} USD</b>\n"
-        f"≈ <code>{amount}</code> {coin} (live)\n\n"
-        f"<b>Send to this wallet:</b>\n"
+        f"≈ <code>{amount}</code> {coin} (live rate)\n\n"
+        f"<b>Send exactly this amount to:</b>\n"
         f"<code>{wallet}</code>\n\n"
         f"Worldwide · 8–12 days\n"
         f"Time: {get_time()}"
     )
-
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("Copy Wallet Address", callback_data=f"copy_{wallet}"))
     markup.add(types.InlineKeyboardButton("I Paid – Contact Support", url=support_url))
 
-    try:
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
-                              parse_mode="HTML", reply_markup=markup)
-        # Clean up
-        product_names.pop(call.from_user.id, None)
-    except Exception as e:
-        print(f"Edit failed: {e}")
-        bot.answer_callback_query(call.id, "Try again.")
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
+                          parse_mode="HTML", reply_markup=markup)
+    product_names.pop(call.from_user.id, None)  # Clean up
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("copy_"))
 def copy_wallet(call):
-    wallet = call.data[5:]
+    wallet = call.data.split("_", 1)[1]
     bot.answer_callback_query(call.id, wallet, show_alert=True)
 
-# === FLASK ===
 @app.route('/')
 def home():
-    return "DarkWeb Bot Running | All Good"
+    return "DarkWeb Bot Running | Railway 2025 | All Systems Green"
 
+# === RAILWAY FIX: Only run polling once + use correct PORT ===
 if __name__ == "__main__":
-    print("Bot Started Successfully!")
+    print("DarkWeb Bot Starting on Railway...")
+    # Run polling in background
     threading.Thread(target=bot.infinity_polling, kwargs={"none_stop": True}, daemon=True).start()
-    app.run(host="0.0.0.0", port=8000)
+    # Use Railway's PORT
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
