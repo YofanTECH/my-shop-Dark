@@ -21,7 +21,6 @@ ZEC_WALLET = "t1P3JNGK4q8RdTL9NTav6J5kzGcWitPXX7k"
 bot = telebot.TeleBot(BOT_TOKEN)
 bot.remove_webhook()
 
-# Cache & storage
 product_names = {}
 price_cache = {"bitcoin": {"price": 0, "time": 0}, "zcash": {"price": 0, "time": 0}}
 
@@ -62,43 +61,41 @@ def is_member(user_id):
 def get_time():
     return datetime.now().strftime("%b %d, %Y – %I:%M %p EAT")
 
-def get_user_display(user):
-    """Returns @username or FirstName – perfect for scary personal touch"""
-    if user.username:
-        return f"@{user.username}"
-    return user.first_name or "Stranger"
+def get_user_name(user):
+    """Returns only first name – no @username ever"""
+    return user.first_name.strip() if user.first_name else "Client"
 
-# === /start – NOW PERSONALIZED ===
+# === /start ===
 @bot.message_handler(commands=['start'])
 def start(msg):
-    user_tag = get_user_display(msg.from_user)
+    name = get_user_name(msg.from_user)
     markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("I Joined", callback_data="check_join"))
     markup.add(types.InlineKeyboardButton("I Joined", callback_data="check_join"))
     bot.send_message(msg.chat.id,
         f"<b>DARKWEB PRODUCTS</b>\n"
-        f"Hello <b>{user_tag}</b> 👁\n"
+        f"Welcome <b>{name}</b>\n"
         "Worldwide underground prices | Fast delivery\n"
-        "We already know who you are.\n\n"
-        f"Join our channel to continue:\n{CHANNEL_USERNAME}\n\n"
+        "Best selection. Lowest risk.\n\n"
+        f"Join the channel to begin:\n{CHANNEL_USERNAME}\n\n"
         f"Time: {get_time()}",
         parse_mode="HTML", reply_markup=markup)
 
-# === Check Join – PERSONALIZED ===
+# === Check Join ===
 @bot.callback_query_handler(func=lambda c: c.data == "check_join")
 def check_join(call):
-    user_tag = get_user_display(call.from_user)
+    name = get_user_name(call.from_user)
     if is_member(call.from_user.id):
         bot.edit_message_text(
-            f"<b>{user_tag}</b> – Access granted.\n"
-            "Forward any product post from our channel to order.\n"
-            "We are watching.",
+            f"<b>{name}</b> – Access granted.\n"
+            "Forward any product post from our channel to order.",
             call.message.chat.id, call.message.message_id, parse_mode="HTML"
         )
-        bot.answer_callback_query(call.id, "Welcome to the dark side.")
+        bot.answer_callback_query(call.id, "Good choice.")
     else:
-        bot.answer_callback_query(call.id, f"{user_tag} – Join the channel first!", show_alert=True)
+        bot.answer_callback_query(call.id, f"{name} – Join the channel first.", show_alert=True)
 
-# === FORWARD PRODUCT ===
+# === FORWARD – NOW SUPPORTS ANY NUMBER OF PHOTOS (ALBUMS) ===
 @bot.message_handler(content_types=['photo', 'text'])
 def handle_forward(message):
     if not message.forward_from_chat or message.forward_from_chat.username != CHANNEL_USERNAME[1:]:
@@ -107,8 +104,20 @@ def handle_forward(message):
         bot.reply_to(message, "Join the channel first.")
         return
 
-    text = (message.caption or message.text or "")
-    info = parse_product(text)
+    # Get caption from single photo OR from photo album (last photo in group)
+    caption = ""
+    if hasattr(message, 'caption') and message.caption:
+        caption = message.caption
+    elif message.photo:
+        # In albums, caption is attached to the last photo
+        last_photo = message.photo[-1]
+        caption = getattr(last_photo, 'caption', "") or ""
+
+    if not caption:
+        bot.reply_to(message, "No product caption found.")
+        return
+
+    info = parse_product(caption)
     if not info:
         bot.reply_to(message, "Invalid product format.")
         return
@@ -116,7 +125,7 @@ def handle_forward(message):
         bot.reply_to(message, f"{info['item_id']} – SOLD OUT")
         return
 
-    user_tag = get_user_display(message.from_user)
+    name = get_user_name(message.from_user)
     product_names[message.chat.id] = info
 
     markup = types.InlineKeyboardMarkup(row_width=1)
@@ -125,7 +134,7 @@ def handle_forward(message):
         types.InlineKeyboardButton("Zcash",   callback_data=f"pay_ZEC_{info['item_id']}_{info['price']}")
     )
     bot.send_message(message.chat.id,
-        f"<b>{info['item_id']} Verified – {user_tag}</b>\n"
+        f"<b>{info['item_id']} Verified – {name}</b>\n"
         f"{info['name']}\n\n"
         f"<b>${info['price']:,} USD</b>\n"
         f"Worldwide delivery: 8–12 days\n\n"
@@ -133,18 +142,18 @@ def handle_forward(message):
         "Choose payment method:",
         parse_mode="HTML", reply_markup=markup)
 
-# === PAYMENT – FULL SCARY PERSONALIZATION ===
+# === PAYMENT ===
 @bot.callback_query_handler(func=lambda c: c.data.startswith("pay_"))
 def show_payment(call):
     try:
         _, crypto, item_id, price_str = call.data.split("_", 3)
         price = int(price_str)
     except:
-        bot.answer_callback_query(call.id, "Error. Try again.", show_alert=True)
+        bot.answer_callback_query(call.id, "Error.", show_alert=True)
         return
 
     info = product_names.get(call.from_user.id, {"name": "Item", "item_id": item_id})
-    user_tag = get_user_display(call.from_user)
+    name = get_user_name(call.from_user)
 
     if crypto == "BTC":
         wallet = BTC_WALLET
@@ -155,26 +164,25 @@ def show_payment(call):
         amount = round(price / get_live_price("zcash"), 6)
         coin = "ZEC"
 
-    # SCARY SUPPORT MESSAGE WITH USER'S NAME
     support_text = (
-        f"NEW PAYMENT DETECTED\n\n"
-        f"Buyer: {user_tag}\n"
+        f"NEW PAYMENT\n\n"
+        f"Buyer: {name}\n"
         f"User ID: {call.from_user.id}\n"
         f"Product: {info['name']}\n"
         f"Item ID: {info['item_id']}\n"
         f"Price: ${price:,} USD\n"
-        f"Crypto: {coin} – {amount}\n\n"
-        f"Payment window closing soon.\n"
-        f"Confirm or we vanish forever."
+        f"Paid with: {coin} – {amount}\n\n"
+        f"Please confirm payment and proceed with delivery."
     )
     support_url = f"https://t.me/{SUPPORT_USERNAME}?text={requests.utils.quote(support_text)}"
 
     text = (
-        f"<b>{item_id} – {user_tag}</b>\n"
+        f"<b>{item_id} – {name}</b>\n"
+        f"{info['name']}\n\n"
         f"{info['name']}\n\n"
         f"<b>${price:,} USD</b>\n"
         f"≈ <code>{amount}</code> {coin} (live)\n\n"
-        f"<b>Send to this address NOW:</b>\n"
+        f"<b>Send exactly to:</b>\n"
         f"<code>{wallet}</code>\n\n"
         f"Worldwide · 8–12 days\n"
         f"Time: {get_time()}"
@@ -194,11 +202,10 @@ def copy_wallet(call):
 
 @app.route('/')
 def home():
-    return "DarkWeb Bot Running | Personalized | Railway 2025"
+    return "DarkWeb Bot | Clean & Personal | Running 24/7"
 
-# === RAILWAY START ===
 if __name__ == "__main__":
-    print("DarkWeb Bot Starting – Personalized Mode Activated...")
+    print("DarkWeb Bot Launched – Final Version")
     threading.Thread(target=bot.infinity_polling, kwargs={"none_stop": True}, daemon=True).start()
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
