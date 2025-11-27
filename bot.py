@@ -9,7 +9,7 @@ from flask import Flask
 app = Flask(__name__)
 
 # === CONFIG ===
-BOT_TOKEN = "8575320394:AAEKlwpqbny9H2MEz8tXMSNStmvHRG9KMOM"
+BOT_TOKEN = "8575320394:AAHTTuOEEEJ1bN2XBSidHpTFer_785X5e6A"
 CHANNEL_USERNAME = "@DarkWeb_MarketStore"        # With @
 CHANNEL_ID = "@DarkWeb_MarketStore"
 SUPPORT_USERNAME = "Backdoor_Operator"
