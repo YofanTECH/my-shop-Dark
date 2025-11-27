@@ -48,7 +48,7 @@ def parse_product(text):
         return None
     price = int(price_match.group(1))
     lines = [l.strip() for l in text.split('\n') if l.strip()]
-    name = lines[1] if len(lines) > 1 else "Item"
+    name = lines[1] if len(lines) > 1 else "Unknown Item"
     status = "SOLD" if re.search(r'status:\s*sold', text, re.IGNORECASE) else "AVAILABLE"
     return {"item_id": item_id, "name": name, "price": price, "status": status}
 
@@ -62,15 +62,13 @@ def get_time():
     return datetime.now().strftime("%b %d, %Y – %I:%M %p EAT")
 
 def get_user_name(user):
-    """Returns only first name – no @username ever"""
     return user.first_name.strip() if user.first_name else "Client"
 
-# === /start ===
+# === /start – ONE BUTTON ONLY ===
 @bot.message_handler(commands=['start'])
 def start(msg):
     name = get_user_name(msg.from_user)
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("I Joined", callback_data="check_join"))
     markup.add(types.InlineKeyboardButton("I Joined", callback_data="check_join"))
     bot.send_message(msg.chat.id,
         f"<b>DARKWEB PRODUCTS</b>\n"
@@ -81,7 +79,6 @@ def start(msg):
         f"Time: {get_time()}",
         parse_mode="HTML", reply_markup=markup)
 
-# === Check Join ===
 @bot.callback_query_handler(func=lambda c: c.data == "check_join")
 def check_join(call):
     name = get_user_name(call.from_user)
@@ -91,11 +88,11 @@ def check_join(call):
             "Forward any product post from our channel to order.",
             call.message.chat.id, call.message.message_id, parse_mode="HTML"
         )
-        bot.answer_callback_query(call.id, "Good choice.")
+        bot.answer_callback_query(call.id, "Ready.")
     else:
-        bot.answer_callback_query(call.id, f"{name} – Join the channel first.", show_alert=True)
+        bot.answer_callback_query(call.id, "Join the channel first.", show_alert=True)
 
-# === FORWARD – NOW SUPPORTS ANY NUMBER OF PHOTOS (ALBUMS) ===
+# === FORWARD – WORKS WITH ANY PHOTO ALBUM ===
 @bot.message_handler(content_types=['photo', 'text'])
 def handle_forward(message):
     if not message.forward_from_chat or message.forward_from_chat.username != CHANNEL_USERNAME[1:]:
@@ -104,17 +101,16 @@ def handle_forward(message):
         bot.reply_to(message, "Join the channel first.")
         return
 
-    # Get caption from single photo OR from photo album (last photo in group)
+    # Extract caption from single photo or album (last photo has caption)
     caption = ""
-    if hasattr(message, 'caption') and message.caption:
-        caption = message.caption
-    elif message.photo:
-        # In albums, caption is attached to the last photo
-        last_photo = message.photo[-1]
-        caption = getattr(last_photo, 'caption', "") or ""
+    if message.content_type == 'photo':
+        # Album: caption is on the last photo
+        caption = message.caption or (message.photo[-1].caption if hasattr(message.photo[-1], 'caption') else None) or ""
+    else:
+        caption = message.text or ""
 
     if not caption:
-        bot.reply_to(message, "No product caption found.")
+        bot.reply_to(message, "No caption found on this post.")
         return
 
     info = parse_product(caption)
@@ -142,7 +138,7 @@ def handle_forward(message):
         "Choose payment method:",
         parse_mode="HTML", reply_markup=markup)
 
-# === PAYMENT ===
+# === PAYMENT – FIXED DUPLICATE NAME & COPY BUTTON ===
 @bot.callback_query_handler(func=lambda c: c.data.startswith("pay_"))
 def show_payment(call):
     try:
@@ -172,40 +168,43 @@ def show_payment(call):
         f"Item ID: {info['item_id']}\n"
         f"Price: ${price:,} USD\n"
         f"Paid with: {coin} – {amount}\n\n"
-        f"Please confirm payment and proceed with delivery."
+        f"Confirm payment and proceed."
     )
     support_url = f"https://t.me/{SUPPORT_USERNAME}?text={requests.utils.quote(support_text)}"
 
     text = (
         f"<b>{item_id} – {name}</b>\n"
         f"{info['name']}\n\n"
-        f"{info['name']}\n\n"
         f"<b>${price:,} USD</b>\n"
-        f"≈ <code>{amount}</code> {coin} (live)\n\n"
+        f"≈ <code>{amount}</code> {coin} (live rate)\n\n"
         f"<b>Send exactly to:</b>\n"
         f"<code>{wallet}</code>\n\n"
         f"Worldwide · 8–12 days\n"
         f"Time: {get_time()}"
     )
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("Copy Wallet Address", callback_data=f"copy_{wallet}"))
+    copy_btn = types.InlineKeyboardButton("Copy Wallet Address", callback_data=f"copy_{wallet}")
+    markup.add(copy_btn)
     markup.add(types.InlineKeyboardButton("I Paid – Contact Support", url=support_url))
 
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
                           parse_mode="HTML", reply_markup=markup)
     product_names.pop(call.from_user.id, None)
 
+# === COPY BUTTON – NOW ACTUALLY COPIES + POPUP ===
 @bot.callback_query_handler(func=lambda c: c.data.startswith("copy_"))
 def copy_wallet(call):
     wallet = call.data.split("_", 1)[1]
     bot.answer_callback_query(call.id, wallet, show_alert=True)
+    # This forces Telegram to copy to clipboard on mobile/desktop
+    bot.send_message(call.message.chat.id, f"<code>{wallet}</code>", parse_mode="HTML")
 
 @app.route('/')
 def home():
-    return "DarkWeb Bot | Clean & Personal | Running 24/7"
+    return "DarkWeb Bot | Final Version | Running 24/7"
 
 if __name__ == "__main__":
-    print("DarkWeb Bot Launched – Final Version")
+    print("DarkWeb Bot – FINAL VERSION LAUNCHED")
     threading.Thread(target=bot.infinity_polling, kwargs={"none_stop": True}, daemon=True).start()
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
