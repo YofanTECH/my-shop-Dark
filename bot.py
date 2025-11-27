@@ -15,8 +15,8 @@ CHANNEL_USERNAME = "@DarkWeb_MarketStore"
 CHANNEL_ID = "@DarkWeb_MarketStore"
 SUPPORT_USERNAME = "Backdoor_Operator"
 
-BTC_WALLET = "bc1qydlfhxwkv50zcxzc5z5evuadhfh7dsexg9wqtt"
-ZEC_WALLET = "t1P3JNGK4q8RdTL9NTav6J5kzGcWitPXX7k"
+BTC_WALLET = "18X4xqwHoBExqcQ8TafY7c4n23ABZ3uepR"
+ZEC_WALLET = "tex1qgxtzk8ek7k3m6d9u50055ruvma28t364hr42w"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 bot.remove_webhook()
